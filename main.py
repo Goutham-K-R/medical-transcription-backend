@@ -1,10 +1,9 @@
-# main.py (Updated to call Gemini function)
+# main.py (Updated with health check and resilience flag)
 
 import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-# --- Import the new function ---
 from utils import asr_bhashini, translate_bhashini, gemini_process
 
 logging.basicConfig(level=logging.INFO)
@@ -23,15 +22,18 @@ class AudioInput(BaseModel):
     audioContent: str
     language: str
 
+# --- ADDED: Health Check Endpoint for Render ---
+@app.get("/")
+def health_check():
+    """A simple endpoint to confirm the service is live."""
+    return {"status": "ok", "message": "Service is running!"}
+
+
 @app.post("/transcribe")
 async def transcribe(input_data: AudioInput):
-    """
-    Handles the end-to-end transcription pipeline using the most robust logic.
-    """
     try:
         logger.info(f"Received request for language: {input_data.language}")
 
-        # Step 1: Get the transcript in its original spoken language.
         original_language_transcript = asr_bhashini(input_data.audioContent, input_data.language)
         logger.info(f"Original transcript ({input_data.language}): {original_language_transcript}")
 
@@ -39,22 +41,22 @@ async def transcribe(input_data: AudioInput):
             logger.warning("Original transcript is empty.")
             return {"final_english_text": "", "extracted_terms": {}}
 
-        # Step 2: Get an English translation to use as a hint for the LLM.
         english_transcript_for_llm = original_language_transcript
+        translation_failed = False # --- ADDED: Initialize the flag ---
+
         if input_data.language in ['ml', 'hi']:
             try:
                 english_transcript_for_llm = translate_bhashini(original_language_transcript, input_data.language)
                 logger.info(f"Translated transcript for LLM (en): {english_transcript_for_llm}")
             except Exception as e:
                 logger.error(f"Translation failed: {e}. The LLM will proceed using the original text only.")
-                english_transcript_for_llm = original_language_transcript 
+                english_transcript_for_llm = original_language_transcript
+                translation_failed = True # --- ADDED: Set flag to True on failure ---
 
-        # Step 3: Call the master Gemini function with both texts.
-        # --- Call the new function ---
-        llm_result = gemini_process(original_language_transcript, english_transcript_for_llm)
+        # --- MODIFIED: Pass the translation_failed flag to the Gemini function ---
+        llm_result = gemini_process(original_language_transcript, english_transcript_for_llm, translation_failed=translation_failed)
         logger.info("Successfully processed with Gemini.")
         
-        # Step 4: Construct and send the final response.
         final_response = {
             "final_english_text": original_language_transcript,
             "extracted_terms": llm_result.get("extracted_terms", {})

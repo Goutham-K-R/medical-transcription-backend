@@ -1,10 +1,10 @@
-# utils.py (Updated for Gemini API)
+# utils.py (Updated with robust prompt and logic)
 
 import os
 import requests
 import json
 from dotenv import load_dotenv
-import google.generativeai as genai # <-- Import Gemini library
+import google.generativeai as genai
 
 load_dotenv()
 
@@ -15,7 +15,7 @@ TRANSLATION_URL = "https://meity-auth.ulcacontrib.org/ulca/apis/v0/model/compute
 ASR_MODELS = { "ml": os.getenv("ULCA_ASR_MODEL_ML"), "hi": os.getenv("ULCA_ASR_MODEL_HI"), "en": os.getenv("ULCA_ASR_MODEL_EN")}
 TRANSLATION_MODELS = { "hi": os.getenv("ULCA_TRANSLATION_MODEL_ID_HI"), "ml": os.getenv("ULCA_TRANSLATION_MODEL_ID_ML")}
 
-# --- Gemini API Configuration ---
+# --- Gemini API Configuration (unchanged) ---
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
     raise ValueError("GOOGLE_API_KEY not found in environment variables.")
@@ -28,7 +28,7 @@ def asr_bhashini(audio_base64, lang_code):
     if not model_id: raise ValueError(f"ASR Model ID not found for language: {lang_code}")
     payload = { "modelId": model_id, "task": "asr", "audioContent": audio_base64, "source": lang_code, "userId": ULCA_USER_ID }
     headers = {"Content-Type": "application/json"}
-    response = requests.post(ASR_URL, headers=headers, json=payload, timeout=30)
+    response = requests.post(ASR_URL, headers=headers, json=payload, timeout=45) # Increased timeout slightly
     response.raise_for_status()
     transcript = response.json().get("data", {}).get("source", "")
     if not transcript: raise ValueError("ASR service returned an empty transcript.")
@@ -40,7 +40,7 @@ def translate_bhashini(text, source_lang):
     if not model_id: raise ValueError(f"Translation Model ID not found for language: {source_lang}")
     payload = { "modelId": model_id, "task": "translation", "input": [{"source": text}], "config": {"language": {"sourceLanguage": source_lang, "targetLanguage": "en"}}, "userId": ULCA_USER_ID }
     headers = {"Content-Type": "application/json"}
-    response = requests.post(TRANSLATION_URL, headers=headers, json=payload, timeout=30)
+    response = requests.post(TRANSLATION_URL, headers=headers, json=payload, timeout=45) # Increased timeout slightly
     response.raise_for_status()
     output = response.json().get("output", [])
     if not output: raise ValueError("Translation service returned an empty output list.")
@@ -49,79 +49,94 @@ def translate_bhashini(text, source_lang):
     return translated_text
 
 
-# --- NEW FUNCTION REPLACING local_llm_process ---
-def gemini_process(original_text, translated_text):
+# --- UPDATED GEMINI FUNCTION ---
+def gemini_process(original_text, translated_text, translation_failed=False):
     """
-    Processes text with the Gemini API using the final, most robust LLM prompt.
+    Processes text with the Gemini API, now with enhanced negation handling and
+    resilience to translation failures.
     """
-    # The prompt is IDENTICAL to your original one. No changes needed here.
-    prompt = f"""
-    You are an expert clinical data analyst with two key responsibilities:
+    
+    base_prompt = """
+    You are an expert clinical data analyst with three key responsibilities:
     1.  **Correcting Errors**: You must identify and correct likely spelling or speech-to-text errors in the transcript (e.g., correct "Parasite Amol" to "Paracetamol").
-    2.  **Extracting Data**: After mentally correcting the text, you must meticulously extract the information into a structured JSON object, ignoring any negated information.
+    2.  **Extracting Data**: After mentally correcting the text, you must meticulously extract the information into a structured JSON object.
+    3.  **Ignoring Negations**: You MUST ignore any symptoms, conditions, or medicines the patient explicitly denies having or taking.
 
     First, carefully read the definitions and strict rules for each category:
     - "Symptoms": Patient-reported issues (e.g., "headache", "shortness of breath").
-    - "Symptom Triggers": The cause or timing of a symptom (e.g., "when climbing stairs").
+        - **RULE (CRITICAL)**: Do NOT include symptoms the patient says they DO NOT have.
     - "Medicine Names": Specific prescribed drug names.
         - **RULE 1 (CRITICAL)**: You MUST correct any misspellings or ASR errors (e.g., "Atorvasatin" becomes "Atorvastatin").
         - **RULE 2**: Do NOT include dosage, strength, or frequency here.
         - **RULE 3 (CRITICAL)**: Do NOT include generic forms like 'tablet', 'syrup', 'injection', or 'capsule'.
-    - "Dosage & Frequency": The amount and timing of a dose (e.g., "500mg", "twice a day", "in the morning and evening", "one tablet after food"). # <-- ENHANCED DEFINITION
+        - **RULE 4 (CRITICAL)**: Do NOT include medicines the patient denies taking.
+    - "Dosage & Frequency": The amount and timing of a dose (e.g., "500mg", "twice a day").
     - "Diseases / Conditions": Diagnosed or potential medical conditions (e.g., "Hypertension").
+        - **RULE (CRITICAL)**: Do NOT include conditions the patient denies having.
     - "Medical Procedures / Tests": Any ordered medical tests (e.g., "Blood test", "ECG").
     - "Duration": How long a treatment or symptom lasts (e.g., "for 3 days").
-    - "Doctor's Instructions": Specific non-medication advice (e.g., "get plenty of rest", "drink warm water").
+    - "Doctor's Instructions": Specific non-medication advice (e.g., "get plenty of rest").
 
     ---
-    **EXAMPLE OF YOUR TWO-STEP LOGIC IN ACTION:**
+    **EXAMPLES OF YOUR LOGIC IN ACTION:**
 
-    *   **EXAMPLE INPUT TEXT (contains all tricky cases):**
-        "Patient has a fever and it was mentioned he is taking a 500mg Parasite Amol tablet twice a day. He also takes Cof-Ex syrup in the morning and evening. Doctor asked about Atorvasatin, but patient said no. We need an ECG."
+    *   **EXAMPLE 1 (Handling Negation):**
+        *   INPUT TEXT: "Patient says no fever and no headache, but has a cough. He is taking Parasite Amol."
+        *   YOUR JSON OUTPUT:
+            {
+              "extracted_terms": {
+                "Symptoms": ["cough"],
+                "Medicine Names": ["Paracetamol"]
+              }
+            }
 
-    *   **EXAMPLE JSON OUTPUT (shows correction, filtering, and all categories):** # <-- ENHANCED EXAMPLE
-        {{
-          "extracted_terms": {{
-            "Symptoms": ["fever"],
-            "Symptom Triggers": [],
-            "Medicine Names": ["Paracetamol", "Cof-Ex"],
-            "Dosage & Frequency": ["500mg", "twice a day", "in the morning and evening"],
-            "Diseases / Conditions": [],
-            "Medical Procedures / Tests": ["ECG"],
-            "Duration": [],
-            "Doctor's Instructions": []
-          }}
-        }}
+    *   **EXAMPLE 2 (Complex Extraction):**
+        *   INPUT TEXT: "He takes Cof-Ex syrup in the morning and evening for 3 days. We need an ECG."
+        *   YOUR JSON OUTPUT:
+            {
+              "extracted_terms": {
+                "Medicine Names": ["Cof-Ex"],
+                "Dosage & Frequency": ["in the morning and evening"],
+                "Duration": ["for 3 days"],
+                "Medical Procedures / Tests": ["ECG"]
+              }
+            }
     ---
-
-    Now, apply this same two-step logic (Correct, then Extract) to the following text. Your response must be ONLY the valid JSON object.
-
-    **Original Language Text:**
-    "{original_text}"
-
-    **English Translation:**
-    "{translated_text}"
-
-    Your JSON Output:
     """
+    
+    # Conditionally add instructions based on whether translation worked
+    if translation_failed:
+        final_prompt = base_prompt + f"""
+        IMPORTANT: The English translation for the text below failed. You are receiving the text in its original language. 
+        Do your best to understand the original text and extract the required entities. 
+        CRITICAL RULE: Your final JSON output MUST contain only English terms.
 
-    # --- This is the new Gemini API call ---
+        **Original Language Text:**
+        "{original_text}"
+
+        Your JSON Output:
+        """
+    else:
+        final_prompt = base_prompt + f"""
+        Now, apply your three-step logic (Correct, Extract, Ignore Negations) to the following text. Your response must be ONLY the valid JSON object.
+
+        **Original Language Text:**
+        "{original_text}"
+
+        **English Translation:**
+        "{translated_text}"
+
+        Your JSON Output:
+        """
+
     try:
-        # We use gemini-1.5-flash for speed and cost-effectiveness.
-        # We explicitly ask for a JSON response.
         model = genai.GenerativeModel(
             'gemini-1.5-flash-latest',
             generation_config={"response_mime_type": "application/json"}
         )
-        
-        response = model.generate_content(prompt)
-        
-        # The response.text will be a clean JSON string because of the mime_type setting
+        response = model.generate_content(final_prompt)
         return json.loads(response.text)
-
     except json.JSONDecodeError:
-        # This might happen if the model fails to return perfect JSON despite the instruction.
         raise ValueError(f"Gemini API returned invalid JSON. Raw output: {response.text}")
     except Exception as e:
-        # This will catch API errors, connection issues, etc.
         raise ValueError(f"An unexpected error occurred with the Gemini API: {e}")
