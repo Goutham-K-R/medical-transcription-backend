@@ -1,5 +1,3 @@
-# main.py (Final Version - JSONResponse Fix Added)
-
 import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,53 +21,47 @@ class AudioInput(BaseModel):
     audioContent: str
     language: str
 
-# ✅ Health Check
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "Service is running!"}
+    return {"status": "ok"}
 
-
-# ✅ Transcription Route
 @app.post("/transcribe")
 async def transcribe(input_data: AudioInput):
     try:
-        logger.info(f"Received request for language: {input_data.language}")
+        logger.info(f"🌐 Language: {input_data.language}")
 
+        # Step 1: Transcribe using Bhashini ASR
         original_transcript = asr_bhashini(input_data.audioContent, input_data.language)
-        logger.info(f"Original transcript ({input_data.language}): {original_transcript}")
+        logger.info(f"📝 ASR Output: {original_transcript}")
 
-        if not original_transcript.strip():
-            logger.warning("⚠️ Original transcript is empty.")
-            return JSONResponse(content={
-                "final_english_text": "",
-                "extracted_terms": {}
-            })
-
-        english_transcript = original_transcript
-        translation_failed = False
-
-        if input_data.language in ['ml', 'hi']:
+        # Step 2: Translate if required
+        if input_data.language in ["ml", "hi"]:
             try:
-                english_transcript = translate_bhashini(original_transcript, input_data.language)
-                logger.info(f"Translated transcript (en): {english_transcript}")
+                translated_text = translate_bhashini(original_transcript, input_data.language)
+                logger.info(f"🌍 Translated (en): {translated_text}")
             except Exception as e:
-                logger.error(f"Translation failed: {e}")
-                translation_failed = True  # fallback to original language
+                logger.error(f"❌ Translation failed: {e}")
+                translated_text = original_transcript
+        else:
+            translated_text = original_transcript
 
-        llm_result = gemini_process(original_transcript, english_transcript, translation_failed=translation_failed)
-        logger.info("✅ Successfully processed with Gemini")
+        # Step 3: LLM extraction
+        result = gemini_process(original_transcript, translated_text)
+        logger.info(f"✅ Gemini Result: {result}")
 
+        # Step 4: Force valid JSON return
         response_data = {
-            "final_english_text": original_transcript,
-            "extracted_terms": llm_result.get("extracted_terms", {})
+            "final_english_text": original_transcript or "No transcript found.",
+            "extracted_terms": result.get("extracted_terms", {})
         }
 
-        logger.info(f"✅ Sending response to UI: {response_data}")
-        return JSONResponse(content=response_data)  # ✅ This guarantees a proper JSON response
+        logger.info(f"✅ Final response to client: {response_data}")
+        return JSONResponse(content=response_data, status_code=200)
 
-    except ValueError as ve:
-        logger.error(f"Value Error: {ve}")
-        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        logger.critical(f"Unexpected Error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="An internal server error occurred.")
+        logger.critical(f"🔥 Internal Server Error: {e}", exc_info=True)
+        return JSONResponse(content={
+            "final_english_text": "",
+            "extracted_terms": {},
+            "error": str(e)
+        }, status_code=500)
