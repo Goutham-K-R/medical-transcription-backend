@@ -74,8 +74,10 @@
 
 # main.py (Updated with explicit CORS preflight handler)
 
+# main.py (Final Corrected Version)
+
 import logging
-from fastapi import FastAPI, HTTPException, Response 
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from utils import asr_bhashini, translate_bhashini, gemini_process
@@ -85,13 +87,12 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Your existing CORS middleware is still important as a general rule.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 class AudioInput(BaseModel):
@@ -100,34 +101,19 @@ class AudioInput(BaseModel):
 
 @app.get("/")
 def health_check():
-    """A simple endpoint to confirm the service is live."""
     return {"status": "ok", "message": "Service is running!"}
 
-
-# --- THIS IS THE NEW BLOCK TO FIX THE CORS PREFLIGHT ERROR ---
 @app.options("/transcribe")
 async def transcribe_options():
-    """
-    An explicit OPTIONS endpoint to handle CORS preflight requests
-    sent by the browser before the actual POST request to /transcribe.
-    """
     logger.info("Received OPTIONS preflight request for /transcribe")
-    # A 204 No Content response is standard and correct for a successful preflight.
-    # The headers tell the browser what is allowed in the subsequent POST request.
     return Response(status_code=204, headers={
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST, GET, OPTIONS, DELETE, PUT",
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
     })
-# --- END OF NEW BLOCK ---
-
 
 @app.post("/transcribe")
 async def transcribe(input_data: AudioInput):
-    """
-    The main endpoint for transcribing and processing audio.
-    This code remains unchanged.
-    """
     try:
         logger.info(f"Received request for language: {input_data.language}")
 
@@ -153,10 +139,13 @@ async def transcribe(input_data: AudioInput):
         llm_result = gemini_process(original_language_transcript, english_transcript_for_llm, translation_failed=translation_failed)
         logger.info("Successfully processed with Gemini.")
         
+        # --- THIS IS THE FIX ---
+        # Now returning the translated English text instead of the original.
         final_response = {
-            "final_english_text": original_language_transcript,
+            "final_english_text": english_transcript_for_llm, 
             "extracted_terms": llm_result.get("extracted_terms", {})
         }
+        # --- END OF FIX ---
 
         logger.info(f"Sending response to UI: {final_response}")
         return final_response
