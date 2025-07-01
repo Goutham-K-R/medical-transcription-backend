@@ -49,10 +49,13 @@ async def transcribe(input_data: AudioInput):
         result = gemini_process(original_transcript, translated_text)
         logger.info(f"✅ Gemini Result: {result}")
 
-        # Step 4: Force valid JSON return
+        # Updated response structure to match Flutter model
         response_data = {
-            "final_english_text": original_transcript or "No transcript found.",
-            "extracted_terms": result.get("extracted_terms", {})
+            "data": {
+                "extracted_terms": result.get("extracted_terms", {}),
+                "final_english_text": translated_text or original_transcript or "No transcript found.",
+            },
+            "success": True
         }
 
         logger.info(f"✅ Final response to client: {response_data}")
@@ -61,7 +64,10 @@ async def transcribe(input_data: AudioInput):
     except Exception as e:
         logger.critical(f"🔥 Internal Server Error: {e}", exc_info=True)
         return JSONResponse(content={
-            "final_english_text": "",
-            "extracted_terms": {},
+            "data": {
+                "extracted_terms": {},
+                "final_english_text": "",
+            },
+            "success": False,
             "error": str(e)
         }, status_code=500)
