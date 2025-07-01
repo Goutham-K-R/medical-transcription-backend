@@ -76,6 +76,8 @@
 
 # main.py (Final Corrected Version)
 
+# main.py (Cleaned and Final Version)
+
 import logging
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -139,13 +141,10 @@ async def transcribe(input_data: AudioInput):
         llm_result = gemini_process(original_language_transcript, english_transcript_for_llm, translation_failed=translation_failed)
         logger.info("Successfully processed with Gemini.")
         
-        # --- THIS IS THE FIX ---
-        # Now returning the translated English text instead of the original.
         final_response = {
             "final_english_text": english_transcript_for_llm, 
             "extracted_terms": llm_result.get("extracted_terms", {})
         }
-        # --- END OF FIX ---
 
         logger.info(f"Sending response to UI: {final_response}")
         return final_response
